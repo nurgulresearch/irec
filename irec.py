@@ -1,24 +1,56 @@
 import docx
 import re
 from datetime import datetime, timedelta
+from typing import List, Dict, Tuple, Optional
+import uuid
 
-def count_words(text):
+def count_words(text: str) -> int:
     """Counts words in a given text, ignoring whitespace and punctuation."""
     words = re.findall(r'\b\w+\b', text)
     return len(words)
 
-def validate_date_format(date_str, format_str="%m/%Y"):
+def validate_date_format(date_str: str, format_str: str = "%m/%Y") -> Optional[datetime]:
     """Validates if date is in specified format and returns parsed datetime or None."""
     try:
         return datetime.strptime(date_str, format_str)
     except ValueError:
         return None
 
-def validate_email(email):
+def validate_email(email: str) -> bool:
     """Validates if email contains '@' and '.'."""
     return bool(re.match(r".+@.+\..+", email))
 
-def validate_part_0(doc):
+def validate_file_name(file_name: str, pi_surname: str) -> Tuple[bool, str]:
+    """
+    Validates if a file name follows the Part 11 naming protocol.
+    Expected formats:
+    - Application: Surname_IREC Application_MMDDYYYY
+    - Instruments: Surname_[Description-Language]_MMDDYYYY
+    - Consent: Surname_[Description-Language]_MMDDYYYY
+    - Recruitment: Surname_[Description-Language]_MMDDYYYY
+    - Ethics Training: Surname_[TrainingBody_MMDDYYYY]
+    - Other: Surname_[Description-Language]_MMDDYYYY
+    """
+    name_without_ext = file_name.rsplit('.', 1)[0]
+    date_pattern = r"\d{2}\d{2}\d{4}"
+    
+    if re.match(rf"^{pi_surname}_IREC Application_{date_pattern}$", name_without_ext):
+        return True, "Application form naming is valid."
+    
+    pattern = rf"^{pi_surname}_(.+?-(Eng|Ru|Kz))_{date_pattern}$"
+    match = re.match(pattern, name_without_ext)
+    if match:
+        description = match.group(1)
+        language = match.group(2)
+        return True, f"File '{file_name}' naming is valid (Description: {description}, Language: {language})."
+    
+    training_pattern = rf"^{pi_surname}_(CITI|TRREE)_{date_pattern}$"
+    if re.match(training_pattern, name_without_ext):
+        return True, f"Ethics training certificate naming is valid for '{name_without_ext}'."
+    
+    return False, f"File '{file_name}' does not follow naming protocol."
+
+def validate_part_0(doc: docx.Document) -> Tuple[Dict[str, List[str]], bool]:
     """Validates Part 0: Do I Submit an NU IREC Application?"""
     results = {"errors": [], "warnings": [], "info": []}
     part_0_text = ""
@@ -33,37 +65,37 @@ def validate_part_0(doc):
             break
     
     if not part_0_text:
-        results["errors"].append("Part 0 section not found in the document.")
+        results["errors"].append("Part 0 section not found.")
         return results, False
     
     questions = [
         {
-            "text": "Does your research involve human subjects or official records about human subjects?",
+            "text": "Does your research involve human subjects?",
             "pattern": r"Does your research involve human subjects.*?\n.*?(Yes ☑|No ☑|Yes ☐|No ☐)",
             "application_needed": lambda answer: answer.startswith("Yes")
         },
         {
-            "text": "Is this project being conducted solely to fulfill course requirements...?",
+            "text": "Is this project being conducted solely to fulfill course requirements?",
             "pattern": r"Is this project being conducted solely to fulfill course requirements.*?\n.*?(Yes ☑|No ☑|Yes ☐|No ☐)",
             "application_needed": lambda answer: answer.startswith("No")
         },
         {
-            "text": "Is this project a quality assurance activity or program improvement activity...?",
+            "text": "Is this project a quality assurance activity?",
             "pattern": r"Is this project a quality assurance activity.*?\n.*?(Yes ☑|No ☑|Yes ☐|No ☐)",
             "application_needed": lambda answer: answer.startswith("No")
         },
         {
-            "text": "Would you like to use this study to launch future investigations...?",
+            "text": "Would you like to use this study to launch future investigations?",
             "pattern": r"Would you like to use this study to launch future investigations.*?\n.*?(Yes ☑|No ☑|Yes ☐|No ☐)",
             "application_needed": lambda answer: answer.startswith("Yes")
         },
         {
-            "text": "Would you like to disseminate or publish findings...?",
+            "text": "Would you like to disseminate or publish findings?",
             "pattern": r"Would you like to disseminate or publish findings.*?\n.*?(Yes ☑|No ☑|Yes ☐|No ☐)",
             "application_needed": lambda answer: answer.startswith("Yes")
         },
         {
-            "text": "Do you think this research is eligible for an Exemption...?",
+            "text": "Do you think this research is eligible for an Exemption?",
             "pattern": r"Do you think this research is eligible for an Exemption.*?\n.*?(Yes ☑|No ☑|Yes ☐|No ☐)",
             "application_needed": lambda answer: True
         }
@@ -85,7 +117,7 @@ def validate_part_0(doc):
         if question["application_needed"](answer):
             application_needed = True
         
-        if question["text"] == "Do you think this research is eligible for an Exemption...?" and answer == "Yes ☑":
+        if question["text"] == "Do you think this research is eligible for an Exemption?" and answer == "Yes ☑":
             exemption_claimed = True
         
         results["info"].append(f"Response to '{question['text']}': {answer}")
@@ -94,10 +126,7 @@ def validate_part_0(doc):
         results["errors"].append("Part 0 responses indicate no application is needed.")
     
     if exemption_claimed:
-        justification = re.search(
-            r"Outline the reasons why your study should be considered exempt:(.*?)(Part 1:|$)",
-            part_0_text, re.DOTALL
-        )
+        justification = re.search(r"Outline the reasons why your study should be considered exempt:(.*?)(Part 1:|$)", part_0_text, re.DOTALL)
         if justification and justification.group(1).strip():
             results["info"].append("Exemption justification provided.")
         else:
@@ -121,7 +150,7 @@ def validate_part_0(doc):
     
     return results, exemption_claimed
 
-def validate_part_1(doc, exemption_claimed):
+def validate_part_1(doc: docx.Document, exemption_claimed: bool) -> Dict[str, List[str]]:
     """Validates Part 1: Cover Sheet."""
     results = {"errors": [], "warnings": [], "info": []}
     part_1_text = ""
@@ -191,11 +220,12 @@ def validate_part_1(doc, exemption_claimed):
     
     return results
 
-def validate_part_2(doc):
-    """Validates Part 2: Research Team Details."""
+def validate_part_2(doc: docx.Document) -> Tuple[Dict[str, List[str]], str]:
+    """Validates Part 2: Research Team Details and extracts PI surname."""
     results = {"errors": [], "warnings": [], "info": []}
     part_2_text = ""
     in_part_2 = False
+    pi_surname = ""
     
     for para in doc.paragraphs:
         if "Part 2: Research Team Details" in para.text:
@@ -207,7 +237,13 @@ def validate_part_2(doc):
     
     if not part_2_text:
         results["errors"].append("Part 2: Research Team Details section not found.")
-        return results
+        return results, pi_surname
+    
+    pi_name_match = re.search(r"Principal Investigator\s*\n\s*Name:\s*([^\n]+)", part_2_text, re.DOTALL)
+    if pi_name_match and pi_name_match.group(1).strip():
+        pi_name = pi_name_match.group(1).strip()
+        pi_surname = pi_name.split()[-1]  # Assume last word is surname
+        results["info"].append(f"PI Name: {pi_name}, Surname extracted: {pi_surname}")
     
     pi_fields = [
         ("PI Name:", r"Principal Investigator\s*\n\s*Name:\s*([^\n]+)"),
@@ -228,29 +264,28 @@ def validate_part_2(doc):
         else:
             value = match.group(1).strip()
             results["info"].append(f"Field '{field_name}' filled: {value}")
+            if field_name == "PI E-mail address:" and not validate_email(value):
+                results["errors"].append(f"Invalid email format for '{field_name}': {value}")
             if field_name == "PI CITI Training completion date:":
                 try:
                     citi_date = datetime.strptime(value, "%m/%d/%Y")
                     three_years_ago = datetime.now() - timedelta(days=3*365)
                     if citi_date < three_years_ago:
-                        results["errors"].append("PI CITI Training completion date is older than 3 years.")
+                        results["errors"].append("PI CITI Training date is older than 3 years.")
                     else:
-                        results["info"].append("PI CITI Training completion date is valid.")
+                        results["info"].append("PI CITI Training date is valid.")
                 except ValueError:
-                    results["errors"].append("PI CITI Training completion date is not in valid format (MM/DD/YYYY).")
+                    results["errors"].append("PI CITI Training date is not in valid format (MM/DD/YYYY).")
     
-    pi_citi_status_pattern = r"Principal Investigator\s*\n.*?\n\s*Have you completed the CITI basic course.*?\n.*?(Yes ☑|No ☑|Yes ☐|No ☐)"
-    match = re.search(pi_citi_status_pattern, part_2_text, re.DOTALL)
-    if not match:
-        results["errors"].append("PI CITI training completion status not found.")
+    pi_citi_status = re.search(r"Principal Investigator\s*\n.*?\n\s*Have you completed the CITI basic course.*?\n.*?(Yes ☑|No ☑|Yes ☐|No ☐)", part_2_text, re.DOTALL)
+    if not pi_citi_status:
+        results["errors"].append("PI CITI training status not found.")
+    elif pi_citi_status.group(1) == "No ☑":
+        results["errors"].append("PI CITI training status is 'No'.")
+    elif pi_citi_status.group(1) in ["Yes ☐", "No ☐"]:
+        results["warnings"].append("PI CITI training status checkbox is not marked (☐).")
     else:
-        answer = match.group(1)
-        if answer == "No ☑":
-            results["errors"].append("PI CITI training completion status is 'No'.")
-        elif answer == "Yes ☐" or answer == "No ☐":
-            results["warnings"].append("PI CITI training completion status checkbox is not marked (☐).")
-        elif answer == "Yes ☑":
-            results["info"].append("PI CITI training completion status is 'Yes'.")
+        results["info"].append("PI CITI training status is 'Yes'.")
     
     ra_fields = [
         ("RA Name:", r"Research Advisor:\s*\n\s*Name:\s*([^\n]+)"),
@@ -269,6 +304,8 @@ def validate_part_2(doc):
         else:
             value = match.group(1).strip()
             results["info"].append(f"Field '{field_name}' filled: {value}")
+            if field_name == "RA E-mail address:" and not validate_email(value):
+                results["errors"].append(f"Invalid email format for '{field_name}': {value}")
             if field_name == "RA CITI or alternative training completion date:":
                 try:
                     citi_date = datetime.strptime(value, "%m/%d/%Y")
@@ -280,18 +317,15 @@ def validate_part_2(doc):
                 except ValueError:
                     results["errors"].append("RA CITI training date is not in valid format (MM/DD/YYYY).")
     
-    ra_citi_status_pattern = r"Research Advisor:\s*\n.*?\n\s*Have you completed the CITI basic course.*?\n.*?(Yes ☑|No ☑|Yes ☐|No ☐)"
-    match = re.search(ra_citi_status_pattern, part_2_text, re.DOTALL)
-    if not match:
-        results["errors"].append("RA CITI training completion status not found.")
+    ra_citi_status = re.search(r"Research Advisor:\s*\n.*?\n\s*Have you completed the CITI basic course.*?\n.*?(Yes ☑|No ☑|Yes ☐|No ☐)", part_2_text, re.DOTALL)
+    if not ra_citi_status:
+        results["errors"].append("RA CITI training status not found.")
+    elif ra_citi_status.group(1) == "No ☑":
+        results["errors"].append("RA CITI training status is 'No'.")
+    elif ra_citi_status.group(1) in ["Yes ☐", "No ☐"]:
+        results["warnings"].append("RA CITI training status checkbox is not marked (☐).")
     else:
-        answer = match.group(1)
-        if answer == "No ☑":
-            results["errors"].append("RA CITI training completion status is 'No'.")
-        elif answer == "Yes ☐" or answer == "No ☐":
-            results["warnings"].append("RA CITI training completion status checkbox is not marked (☐).")
-        elif answer == "Yes ☑":
-            results["info"].append("RA CITI training completion status is 'Yes'.")
+        results["info"].append("RA CITI training status is 'Yes'.")
     
     additional_investigator_pattern = r"Additional Investigator\(s\):.*?\n\s*Name:\s*([^\n]*)\n\s*NU ID:\s*([^\n]*)\n\s*NU School:\s*([^\n]*)\n\s*Department:\s*([^\n]*)\n\s*Position:\s*([^\n]*)\n\s*E-mail address:\s*([^\n]*)\n\s*Have you completed the CITI basic course.*?\n.*?(Yes ☑|No ☑|Yes ☐|No ☐)\n\s*.*?\n\s*CITI or alternative training completion date:\s*([^\n]*)"
     additional_investigators = re.finditer(additional_investigator_pattern, part_2_text, re.DOTALL)
@@ -300,7 +334,6 @@ def validate_part_2(doc):
     for match in additional_investigators:
         investigator_count += 1
         name = match.group(1).strip()
-        
         if name:
             fields = [
                 ("AI Name", name),
@@ -317,6 +350,8 @@ def validate_part_2(doc):
                     results["errors"].append(f"Additional Investigator {investigator_count}: Field '{field_name}' is missing or empty.")
                 else:
                     results["info"].append(f"Additional Investigator {investigator_count}: Field '{field_name}' filled: {value}")
+                    if field_name == "AI E-mail address:" and not validate_email(value):
+                        results["errors"].append(f"Additional Investigator {investigator_count}: Invalid email format for '{field_name}': {value}")
                     if field_name == "AI CITI or alternative training completion date":
                         try:
                             citi_date = datetime.strptime(value, "%m/%d/%Y")
@@ -331,48 +366,45 @@ def validate_part_2(doc):
             citi_status = match.group(7)
             if citi_status == "No ☑":
                 results["errors"].append(f"Additional Investigator {investigator_count}: CITI training status is 'No'.")
-            elif citi_status == "Yes ☐" or citi_status == "No ☐":
+            elif citi_status in ["Yes ☐", "No ☐"]:
                 results["warnings"].append(f"Additional Investigator {investigator_count}: CITI training status checkbox is not marked (☐).")
-            elif citi_status == "Yes ☑":
+            else:
                 results["info"].append(f"Additional Investigator {investigator_count}: CITI training status is 'Yes'.")
     
     if investigator_count == 0:
         results["info"].append("No Additional Investigators specified.")
     
-    student_section_pattern = r"For students:\s*\n\s*Undergraduate (☑|☐)\s*Masters (☑|☐)\s*PhD (☑|☐)\s*Other (☑|☐)\s*\n\s*Course:\s*([^\n]*)"
-    match = re.search(student_section_pattern, part_2_text, re.DOTALL)
-    if not match:
+    student_section = re.search(r"For students:\s*\n\s*Undergraduate (☑|☐)\s*Masters (☑|☐)\s*PhD (☑|☐)\s*Other (☑|☐)\s*\n\s*Course:\s*([^\n]*)", part_2_text, re.DOTALL)
+    if not student_section:
         results["errors"].append("For students section not found or improperly formatted.")
     else:
-        undergraduate, masters, phd, other = match.group(1), match.group(2), match.group(3), match.group(4)
-        course = match.group(5).strip()
-        
-        selected_categories = []
-        if undergraduate == "☑":
-            selected_categories.append("Undergraduate")
-        if masters == "☑":
-            selected_categories.append("Masters")
-        if phd == "☑":
-            selected_categories.append("PhD")
-        if other == "☑":
-            selected_categories.append("Other")
+        undergraduate, masters, phd, other, course = student_section.groups()
+        selected_categories = [cat for cat, checked in [
+            ("Undergraduate", undergraduate),
+            ("Masters", masters),
+            ("PhD", phd),
+            ("Other", other)
+        ] if checked == "☑"]
         
         if len(selected_categories) != 1:
             results["errors"].append(f"Exactly one student category must be selected. Found {len(selected_categories)}.")
         else:
             results["info"].append(f"Student category selected: {selected_categories[0]}.")
         
-        if not course:
+        if not course.strip():
             results["errors"].append("Course field in For students section is missing or empty.")
         else:
-            results["info"].append(f"Course field filled: {course}.")
+            results["info"].append(f"Course field filled: {course.strip()}.")
     
-    return results
+    return results, pi_surname
 
-def validate_part_3(doc):
-    """Validates Part 3: Research Design and collects methodology text for Part 8 consistency."""
+def validate_part_3(doc: docx.Document) -> Tuple[Dict[str, List[str]], List[Dict], str]:
+    """Validates Part 3: Research Design and collects methodology text."""
     results = {"errors": [], "warnings": [], "info": []}
-    required_forms = []
+    required_forms = [
+        {"form": "Appendix A: IREC Application Form", "reason": "Required for all submissions."},
+        {"form": "CITI Training Certificates", "reason": "Required for all team members."}
+    ]
     part_3_text = ""
     in_part_3 = False
     
@@ -409,117 +441,58 @@ def validate_part_3(doc):
             if min_words and max_words:
                 word_count = count_words(value)
                 if word_count < min_words or word_count > max_words:
-                    results["warnings"].append(
-                        f"Field '{field_name}' has {word_count} words, expected {min_words}–{max_words} words."
-                    )
+                    results["warnings"].append(f"Field '{field_name}' has {word_count} words, expected {min_words}–{max_words}.")
                 else:
-                    results["info"].append(f"Field '{field_name}' word count is valid: {word_count} words.")
+                    results["info"].append(f"Field '{field_name}' word count is valid: {word_count}.")
     
-    data_collection_match = re.search(
-        r"Describe the data collection methodology.*?\n(.*?)(Briefly describe the data analysis processes|$)",
-        part_3_text, re.DOTALL
-    )
-    if data_collection_match and data_collection_match.group(1).strip():
-        methodology = data_collection_match.group(1).lower()
-        
-        required_forms.append({
-            "form": "Appendix A: IREC Application Form",
-            "reason": "Required for all initial NU IREC submissions."
-        })
-        required_forms.append({
-            "form": "CITI Training Certificates",
-            "reason": "Required for all research team members."
-        })
-        
-        research_sites_match = re.search(r"Briefly describe the research sites.*?\n(.*?)(Part 4:|$)", part_3_text, re.DOTALL)
-        research_sites = research_sites_match.group(1).lower() if research_sites_match else ""
-        languages = ["English"]
-        if "kazakhstan" in research_sites:
-            languages.extend(["Russian", "Kazakh"])
-        elif research_sites and "nazarbayev university" not in research_sites:
-            languages.append("Official language(s) of the country")
-        
-        if any(term in methodology for term in ["interview", "focus group", "observation", "action research"]):
-            required_forms.append({
-                "form": "Appendix B: Written Informed Consent Form",
-                "reason": f"Required for qualitative research in {', '.join(languages)}."
-            })
-            required_forms.append({
-                "form": "Appendix D: Oral Consent Script",
-                "reason": f"Required if oral consent is used for qualitative research in {', '.join(languages)}."
-            })
-            required_forms.append({
-                "form": "Interview Questions/Focus Group Guides",
-                "reason": "Required for qualitative data collection methods."
-            })
-            required_forms.append({
-                "form": "Recruitment Materials (e.g., emails, flyers)",
-                "reason": "Required for participant notification in qualitative research."
-            })
-        
-        if any(term in methodology for term in ["survey", "clinical trial", "existing data set", "human genetics"]):
-            if "internet survey" in methodology or "online survey" in methodology:
-                required_forms.append({
-                    "form": "Appendix C: Informed Consent Form for Internet Surveys",
-                    "reason": f"Required for internet-based surveys in {', '.join(languages)}."
-                })
-            else:
-                required_forms.append({
-                    "form": "Appendix B: Written Informed Consent Form",
-                    "reason": f"Required for quantitative research in {', '.join(languages)}."
-                })
-            required_forms.append({
-                "form": "Surveys/Questionnaires",
-                "reason": "Required for quantitative data collection methods."
-            })
-        
-        if "mixed method" in methodology:
-            required_forms.append({
-                "form": "Appendix B: Written Informed Consent Form",
-                "reason": f"Required for mixed methods research in {', '.join(languages)}."
-            })
-            if "interview" in methodology or "focus group" in methodology:
-                required_forms.append({
-                    "form": "Appendix D: Oral Consent Script",
-                    "reason": f"Required if oral consent is used in mixed methods in {', '.join(languages)}."
-                })
-                required_forms.append({
-                    "form": "Interview Questions/Focus Group Guides",
-                    "reason": "Required for qualitative components of mixed methods."
-                })
-            if "survey" in methodology:
-                required_forms.append({
-                    "form": "Surveys/Questionnaires",
-                    "reason": "Required for quantitative components of mixed methods."
-                })
-            required_forms.append({
-                "form": "Recruitment Materials (e.g., emails, flyers)",
-                "reason": "Required for participant notification in mixed methods."
-            })
-        
-        if "genetic" in methodology or "biobank" in methodology:
-            required_forms.append({
-                "form": "Appendix M: Written Informed Consent Form For Genetic and/or Biobank Research",
-                "reason": f"Required for genetic/biobank research in {', '.join(languages)}."
-            })
-        
-        if "collaborator" in methodology or "external organization" in methodology:
-            required_forms.append({
-                "form": "Appendix L: Confidentiality Agreement Form",
-                "reason": f"Required for external collaborators in {', '.join(languages)}."
-            })
-        
-        if research_sites and "nazarbayev university" not in research_sites.lower():
-            required_forms.append({
-                "form": "Letters of Support/Approval from Outside Organizations",
-                "reason": "Required for research conducted at external sites."
-            })
-        
-        if "visual stimuli" in methodology:
-            required_forms.append({
-                "form": "Visual Stimuli",
-                "reason": "Required if visual stimuli are presented to participants."
-            })
+    methodology = methodology_text.lower()
+    research_sites = re.search(r"Briefly describe the research sites.*?\n(.*?)(Part 4:|$)", part_3_text, re.DOTALL)
+    research_sites_text = research_sites.group(1).lower() if research_sites and research_sites.group(1).strip() else ""
+    languages = ["English"]
+    if "kazakhstan" in research_sites_text:
+        languages.extend(["Russian", "Kazakh"])
+    elif research_sites_text and "nazarbayev university" not in research_sites_text:
+        languages.append("Official language(s) of the country")
+    
+    if any(term in methodology for term in ["interview", "focus group", "observation", "action research"]):
+        required_forms.extend([
+            {"form": "Appendix B: Written Informed Consent Form", "reason": f"Required for qualitative research in {', '.join(languages)}."},
+            {"form": "Appendix D: Oral Consent Script", "reason": f"Required if oral consent is used in {', '.join(languages)}."},
+            {"form": "Interview Questions/Focus Group Guides", "reason": "Required for qualitative methods."},
+            {"form": "Recruitment Materials (e.g., emails, flyers)", "reason": "Required for participant notification."}
+        ])
+    
+    if any(term in methodology for term in ["survey", "clinical trial", "existing data set", "human genetics"]):
+        if "internet survey" in methodology or "online survey" in methodology:
+            required_forms.append({"form": "Appendix C: Informed Consent Form for Internet Surveys", "reason": f"Required for internet surveys in {', '.join(languages)}."})
+        else:
+            required_forms.append({"form": "Appendix B: Written Informed Consent Form", "reason": f"Required for quantitative research in {', '.join(languages)}."})
+        required_forms.append({"form": "Surveys/Questionnaires", "reason": "Required for quantitative methods."})
+    
+    if "mixed method" in methodology:
+        required_forms.extend([
+            {"form": "Appendix B: Written Informed Consent Form", "reason": f"Required for mixed methods in {', '.join(languages)}."},
+            {"form": "Recruitment Materials (e.g., emails, flyers)", "reason": "Required for participant notification."}
+        ])
+        if "interview" in methodology or "focus group" in methodology:
+            required_forms.extend([
+                {"form": "Appendix D: Oral Consent Script", "reason": f"Required if oral consent is used in {', '.join(languages)}."},
+                {"form": "Interview Questions/Focus Group Guides", "reason": "Required for qualitative components."}
+            ])
+        if "survey" in methodology:
+            required_forms.append({"form": "Surveys/Questionnaires", "reason": "Required for quantitative components."})
+    
+    if "genetic" in methodology or "biobank" in methodology:
+        required_forms.append({"form": "Appendix M: Written Informed Consent Form For Genetic and/or Biobank Research", "reason": f"Required for genetic/biobank research in {', '.join(languages)}."})
+    
+    if "collaborator" in methodology or "external organization" in methodology:
+        required_forms.append({"form": "Appendix L: Confidentiality Agreement Form", "reason": f"Required for external collaborators in {', '.join(languages)}."})
+    
+    if research_sites_text and "nazarbayev university" not in research_sites_text:
+        required_forms.append({"form": "Letters of Support/Approval from Outside Organizations", "reason": "Required for external sites."})
+    
+    if "visual stimuli" in methodology:
+        required_forms.append({"form": "Visual Stimuli", "reason": "Required if visual stimuli are presented."})
     
     if "attach" in part_3_text.lower() or "appendix" in part_3_text.lower():
         results["info"].append("References to attachments detected in Part 3.")
@@ -528,8 +501,8 @@ def validate_part_3(doc):
     
     return results, required_forms, methodology_text
 
-def validate_part_4(doc, required_forms):
-    """Validates Part 4: Participants and updates required forms."""
+def validate_part_4(doc: docx.Document, required_forms: List[Dict]) -> Tuple[Dict[str, List[str]], List[Dict]]:
+    """Validates Part 4: Participants."""
     results = {"errors": [], "warnings": [], "info": []}
     part_4_text = ""
     in_part_4 = False
@@ -573,38 +546,25 @@ def validate_part_4(doc, required_forms):
             special_populations_yes.append(pop_name)
             results["info"].append(f"Special population '{pop_name}' selected: Yes.")
             if pop_name == "Minors":
-                required_forms.append({
-                    "form": "Appendix E: Assent Form",
-                    "reason": "Required for research involving minors in English, Russian, Kazakh."
-                })
-                required_forms.append({
-                    "form": "Parental Consent Forms",
-                    "reason": "Required for research involving minors in English, Russian, Kazakh."
-                })
+                required_forms.extend([
+                    {"form": "Appendix E: Assent Form", "reason": "Required for minors in English, Russian, Kazakh."},
+                    {"form": "Parental Consent Forms", "reason": "Required for minors in English, Russian, Kazakh."}
+                ])
             else:
-                required_forms.append({
-                    "form": "Appendix B: Written Informed Consent Form",
-                    "reason": f"Required for research involving special population '{pop_name}' in English, Russian, Kazakh."
-                })
+                required_forms.append({"form": "Appendix B: Written Informed Consent Form", "reason": f"Required for special population '{pop_name}' in English, Russian, Kazakh."})
                 if pop_name in ["Sexual behaviors", "Drug use", "Illegal conduct", "Use of alcohol"]:
-                    required_forms.append({
-                        "form": "Appendix L: Confidentiality Agreement Form",
-                        "reason": f"Recommended for research involving sensitive subjects ('{pop_name}') to ensure confidentiality."
-                    })
+                    required_forms.append({"form": "Appendix L: Confidentiality Agreement Form", "reason": f"Recommended for sensitive subjects ('{pop_name}')."})
         else:
             results["info"].append(f"Special population '{pop_name}' selected: No.")
     
     other_special = re.search(r"Other \(please specify\)\s*([^\n]*)", part_4_text)
     if other_special and other_special.group(1).strip():
-        results["info"].append(f"Other special population specified: {other_special.group(1).strip()}.")
-        required_forms.append({
-            "form": "Appendix B: Written Informed Consent Form",
-            "reason": "Required for research involving other special populations in English, Russian, Kazakh."
-        })
+        results["info"].append(f"Other special population: {other_special.group(1).strip()}.")
+        required_forms.append({"form": "Appendix B: Written Informed Consent Form", "reason": "Required for other special populations."})
     
     sample_size = re.search(r"Expected number of participants or sample size:\s*(\d+)", part_4_text)
     if not sample_size or not sample_size.group(1):
-        results["errors"].append("Expected number of participants or sample size is missing or invalid.")
+        results["errors"].append("Sample size is missing or invalid.")
     else:
         results["info"].append(f"Sample size: {sample_size.group(1)}.")
     
@@ -628,13 +588,13 @@ def validate_part_4(doc, required_forms):
     
     if justification_na and justification_na.group(1) == "N/A ☑":
         if special_populations_yes:
-            results["errors"].append("Justification for participant group cannot be N/A when special populations are selected.")
+            results["errors"].append("Justification cannot be N/A when special populations are selected.")
         else:
-            results["info"].append("Justification for participant group marked as N/A.")
+            results["info"].append("Justification marked as N/A.")
     elif justification_text and justification_text.group(1).strip():
-        results["info"].append("Justification for participant group provided.")
+        results["info"].append("Justification provided.")
     else:
-        results["errors"].append("Justification for participant group is missing or empty.")
+        results["errors"].append("Justification is missing or empty.")
     
     relationship = re.search(r"What is your relationship to the participants\?.*?\n(.*?)(Does your relationship potentially create any power|$)", part_4_text, re.DOTALL)
     power_dynamics = re.search(r"Does your relationship potentially create any power.*?\n(.*?)(\n|$)", part_4_text, re.DOTALL)
@@ -642,12 +602,12 @@ def validate_part_4(doc, required_forms):
     if not relationship or not relationship.group(1).strip():
         results["errors"].append("Relationship to participants is missing or empty.")
     else:
-        results["info"].append(f"Relationship to participants: {relationship.group(1).strip()}.")
+        results["info"].append(f"Relationship: {relationship.group(1).strip()}.")
     
     if not power_dynamics or not power_dynamics.group(1).strip():
         results["errors"].append("Power dynamics description is missing or empty.")
     else:
-        results["info"].append(f"Power dynamics description: {power_dynamics.group(1).strip()}.")
+        results["info"].append(f"Power dynamics: {power_dynamics.group(1).strip()}.")
     
     recruitment = re.search(r"Will participants be recruited\?.*?(Yes ☑|No ☑|Yes ☐|No ☐)", part_4_text)
     contact_method_na = re.search(r"How will you contact potential participants.*?\n.*?(N/A ☑|N/A ☐)", part_4_text, re.DOTALL)
@@ -663,10 +623,7 @@ def validate_part_4(doc, required_forms):
             results["warnings"].append("Recruitment checkbox is not marked (☐).")
         elif recruitment_answer == "Yes ☑":
             results["info"].append("Participants will be recruited: Yes.")
-            required_forms.append({
-                "form": "Recruitment Materials (e.g., emails, flyers)",
-                "reason": "Required for participant recruitment."
-            })
+            required_forms.append({"form": "Recruitment Materials (e.g., emails, flyers)", "reason": "Required for recruitment."})
             if contact_method_na and contact_method_na.group(1) == "N/A ☑":
                 results["errors"].append("Contact method cannot be N/A when recruitment is Yes.")
             elif not contact_method_text or not contact_method_text.group(1).strip():
@@ -705,8 +662,8 @@ def validate_part_4(doc, required_forms):
     
     return results, required_forms
 
-def validate_part_5(doc, required_forms):
-    """Validates Part 5: Detailed Procedures and collects involvement text for Part 8 consistency."""
+def validate_part_5(doc: docx.Document, required_forms: List[Dict]) -> Tuple[Dict[str, List[str]], List[Dict], str]:
+    """Validates Part 5: Detailed Procedures."""
     results = {"errors": [], "warnings": [], "info": []}
     part_5_text = ""
     in_part_5 = False
@@ -725,7 +682,7 @@ def validate_part_5(doc, required_forms):
     
     dates = re.search(r"When is the data collection for the research intended to begin and end\?.*?\n\s*(\d{2}/\d{4})\s*to\s*(\d{2}/\d{4})", part_5_text)
     if not dates:
-        results["errors"].append("Data collection start and end dates are missing or improperly formatted.")
+        results["errors"].append("Data collection dates are missing or improperly formatted.")
     else:
         start_date_str, end_date_str = dates.group(1), dates.group(2)
         start_date = validate_date_format(start_date_str)
@@ -737,7 +694,7 @@ def validate_part_5(doc, required_forms):
             results["info"].append(f"Data collection dates: {start_date_str} to {end_date_str}.")
             delta = (end_date.year - start_date.year) * 12 + end_date.month - start_date.month
             if delta > 12:
-                results["errors"].append("Data collection period exceeds one year, which is not allowed without extension.")
+                results["errors"].append("Data collection period exceeds one year.")
     
     involvement = re.search(r"Describe how subjects will be involved in detail.*?\n(.*?)(Will you be the one administering|$)", part_5_text, re.DOTALL)
     involvement_text = ""
@@ -747,10 +704,7 @@ def validate_part_5(doc, required_forms):
         involvement_text = involvement.group(1).strip()
         results["info"].append("Participant involvement description provided.")
         if "debriefing" in involvement_text.lower():
-            required_forms.append({
-                "form": "Debriefing Documents",
-                "reason": "Required if debriefing is part of the research process."
-            })
+            required_forms.append({"form": "Debriefing Documents", "reason": "Required if debriefing is part of the process."})
     
     administration = re.search(r"Will you be the one administering.*?\n(.*?)(Will the participants experience any discomfort|$)", part_5_text, re.DOTALL)
     if not administration or not administration.group(1).strip():
@@ -769,21 +723,18 @@ def validate_part_5(doc, required_forms):
         if "☐" in discomfort_answer:
             results["warnings"].append("Discomfort checkbox is not marked (☐).")
         elif discomfort_answer == "Yes ☑":
-            results["info"].append("Participants may experience discomfort: Yes.")
-            required_forms.append({
-                "form": "Appendix B: Written Informed Consent Form",
-                "reason": "Required for research involving potential discomfort, with precautions described."
-            })
+            results["info"].append("Discomfort: Yes.")
+            required_forms.append({"form": "Appendix B: Written Informed Consent Form", "reason": "Required for discomfort, with precautions."})
             if discomfort_na and discomfort_na.group(1) == "N/A ☑":
                 results["errors"].append("Discomfort explanation cannot be N/A when discomfort is Yes.")
             elif not discomfort_explanation or not discomfort_explanation.group(1).strip():
-                results["errors"].append("Discomfort explanation is missing or empty when discomfort is Yes.")
+                results["errors"].append("Discomfort explanation is missing or empty.")
             else:
                 results["info"].append("Discomfort explanation provided.")
         else:
-            results["info"].append("Participants may experience discomfort: No.")
+            results["info"].append("Discomfort: No.")
             if discomfort_explanation and discomfort_explanation.group(1).strip():
-                results["warnings"].append("Discomfort explanation provided when discomfort is No; expected N/A or empty.")
+                results["warnings"].append("Discomfort explanation provided when discomfort is No.")
     
     deception = re.search(r"Will deception or false or misleading information be used.*?\n.*?(Yes ☑|No ☑|Yes ☐|No ☐)", part_5_text, re.DOTALL)
     deception_na = re.search(r"If “Yes”, explain why deception is necessary.*?\n.*?(N/A ☑|N/A ☐)", part_5_text, re.DOTALL)
@@ -796,30 +747,26 @@ def validate_part_5(doc, required_forms):
         if "☐" in deception_answer:
             results["warnings"].append("Deception checkbox is not marked (☐).")
         elif deception_answer == "Yes ☑":
-            results["info"].append("Deception will be used: Yes.")
-            required_forms.append({
-                "form": "Appendix B: Written Informed Consent Form",
-                "reason": "Required for research involving deception, with debriefing procedures described."
-            })
-            required_forms.append({
-                "form": "Debriefing Documents",
-                "reason": "Required for research involving deception to explain debriefing procedures."
-            })
+            results["info"].append("Deception: Yes.")
+            required_forms.extend([
+                {"form": "Appendix B: Written Informed Consent Form", "reason": "Required for deception, with debriefing."},
+                {"form": "Debriefing Documents", "reason": "Required for deception."}
+            ])
             if deception_na and deception_na.group(1) == "N/A ☑":
                 results["errors"].append("Deception explanation cannot be N/A when deception is Yes.")
             elif not deception_explanation or not deception_explanation.group(1).strip():
-                results["errors"].append("Deception explanation is missing or empty when deception is Yes.")
+                results["errors"].append("Deception explanation is missing or empty.")
             else:
                 results["info"].append("Deception explanation provided.")
         else:
-            results["info"].append("Deception will be used: No.")
+            results["info"].append("Deception: No.")
             if deception_explanation and deception_explanation.group(1).strip():
-                results["warnings"].append("Deception explanation provided when deception is No; expected N/A or empty.")
+                results["warnings"].append("Deception explanation provided when deception is No.")
     
     return results, required_forms, involvement_text
 
-def validate_part_6(doc, required_forms):
-    """Validates Part 6: Data Management Plan and collects data maintenance/sharing text for Part 8 consistency."""
+def validate_part_6(doc: docx.Document, required_forms: List[Dict]) -> Tuple[Dict[str, List[str]], List[Dict], str, str, str]:
+    """Validates Part 6: Data Management Plan."""
     results = {"errors": [], "warnings": [], "info": []}
     part_6_text = ""
     in_part_6 = False
@@ -834,24 +781,21 @@ def validate_part_6(doc, required_forms):
     
     if not part_6_text:
         results["errors"].append("Part 6: Data Management Plan section not found.")
-        return results, required_forms, "", ""
+        return results, required_forms, "", "", ""
     
     electronic_survey = re.search(r"Are you conducting a survey using any electronic media\?.*?(Yes ☑|No ☑|Yes ☐|No ☐)", part_6_text)
     if not electronic_survey:
         results["errors"].append("Electronic survey question not found or improperly formatted.")
-        return results, required_forms, "", ""
+        return results, required_forms, "", "", ""
     
     survey_answer = electronic_survey.group(1)
     if "☐" in survey_answer:
         results["warnings"].append("Electronic survey checkbox is not marked (☐).")
-        return results, required_forms, "", ""
+        return results, required_forms, "", "", ""
     
-    results["info"].append(f"Conducting electronic survey: {survey_answer}.")
+    results["info"].append(f"Electronic survey: {survey_answer}.")
     if survey_answer == "Yes ☑":
-        required_forms.append({
-            "form": "Appendix C: Informed Consent Form for Internet Surveys",
-            "reason": "Required for internet-based surveys in English, Russian, Kazakh."
-        })
+        required_forms.append({"form": "Appendix C: Informed Consent Form for Internet Surveys", "reason": "Required for internet surveys."})
         
         name_privacy = re.search(r"Will you assure that the participant will only see his/her name\?.*?(Yes ☑|No ☑|Yes ☐|No ☐)", part_6_text)
         read_receipt = re.search(r"Will you have the “read receipt” function turned off\?.*?(Yes ☑|No ☑|Yes ☐|No ☐)", part_6_text)
@@ -860,46 +804,26 @@ def validate_part_6(doc, required_forms):
         if not name_privacy:
             results["errors"].append("Name privacy question not found or improperly formatted.")
         else:
-            name_answer = name_privacy.group(1)
-            if "☐" in name_answer:
-                results["warnings"].append("Name privacy checkbox is not marked (☐).")
-            else:
-                results["info"].append(f"Participant name privacy: {name_answer}.")
+            results["info"].append(f"Name privacy: {name_privacy.group(1)}.")
         
         if not read_receipt:
             results["errors"].append("Read receipt question not found or improperly formatted.")
         else:
-            receipt_answer = read_receipt.group(1)
-            if "☐" in receipt_answer:
-                results["warnings"].append("Read receipt checkbox is not marked (☐).")
-            else:
-                results["info"].append(f"Read receipt turned off: {receipt_answer}.")
+            results["info"].append(f"Read receipt: {read_receipt.group(1)}.")
         
         if (name_privacy and name_privacy.group(1) == "No ☑") or (read_receipt and read_receipt.group(1) == "No ☑"):
             if not email_explanation or not email_explanation.group(1).strip():
                 results["errors"].append("Explanation for 'No' in email invitation questions is missing or empty.")
             else:
                 results["info"].append("Explanation for 'No' in email invitation provided.")
-        elif email_explanation and email_explanation.group(1).strip():
-            results["warnings"].append("Email explanation provided when not required (both email questions are Yes or unanswered).")
         
-        dropdown = re.search(
-            r"Do they have the option to choose “No response” or to leave the question blank\?.*?(Yes ☑|No ☑|No dropdown menu ☑|Yes ☐|No ☐|No dropdown menu ☐)",
-            part_6_text
-        )
+        dropdown = re.search(r"Do they have the option to choose “No response”.*?(Yes ☑|No ☑|No dropdown menu ☑|Yes ☐|No ☐|No dropdown menu ☐)", part_6_text)
         if not dropdown:
             results["errors"].append("Dropdown menu question not found or improperly formatted.")
         else:
-            dropdown_answer = dropdown.group(1)
-            if "☐" in dropdown_answer:
-                results["warnings"].append("Dropdown menu checkbox is not marked (☐).")
-            else:
-                results["info"].append(f"Dropdown menu response option: {dropdown_answer}.")
+            results["info"].append(f"Dropdown menu: {dropdown.group(1)}.")
         
-        transmission = re.search(
-            r"How will data be transmitted\?.*?\n(.*?)(What is the URL\?|$)",
-            part_6_text, re.DOTALL
-        )
+        transmission = re.search(r"How will data be transmitted\?.*?\n(.*?)(What is the URL\?|$)", part_6_text, re.DOTALL)
         if not transmission or not transmission.group(1).strip():
             results["errors"].append("Data transmission description is missing or empty.")
         else:
@@ -910,30 +834,19 @@ def validate_part_6(doc, required_forms):
             results["errors"].append("URL is missing or empty for electronic survey.")
         else:
             results["info"].append(f"Survey URL: {url.group(1).strip()}.")
-        
+    
     else:
-        name_privacy = re.search(r"Will you assure that the participant will only see his/her name\?.*?(Yes ☑|No ☑|Yes ☐|No ☐)", part_6_text)
-        read_receipt = re.search(r"Will you have the “read receipt” function turned off\?.*?(Yes ☑|No ☑|Yes ☐|No ☐)", part_6_text)
-        email_explanation = re.search(r"If you answered “No” to these questions, please explain.*?\n(.*?)(If your survey contains questions|$)", part_6_text, re.DOTALL)
-        dropdown = re.search(
-            r"Do they have the option to choose “No response” or to leave the question blank\?.*?(Yes ☑|No ☑|No dropdown menu ☑|Yes ☐|No ☐|No dropdown menu ☐)",
-            part_6_text
-        )
-        transmission = re.search(r"How will data be transmitted\?.*?\n(.*?)(What is the URL\?|$)", part_6_text, re.DOTALL)
-        url = re.search(r"What is the URL\?.*?\n\s*([^\n]*)", part_6_text)
-        
-        if name_privacy and name_privacy.group(1) not in ["Yes ☐", "No ☐"]:
-            results["errors"].append("Name privacy question should be unanswered (☐) when electronic survey is No.")
-        if read_receipt and read_receipt.group(1) not in ["Yes ☐", "No ☐"]:
-            results["errors"].append("Read receipt question should be unanswered (☐) when electronic survey is No.")
-        if email_explanation and email_explanation.group(1).strip():
-            results["errors"].append("Email explanation should be empty when electronic survey is No.")
-        if dropdown and dropdown.group(1) not in ["Yes ☐", "No ☐", "No dropdown menu ☐"]:
-            results["errors"].append("Dropdown menu question should be unanswered (☐) when electronic survey is No.")
-        if transmission and transmission.group(1).strip():
-            results["errors"].append("Data transmission description should be empty when electronic survey is No.")
-        if url and url.group(1).strip():
-            results["errors"].append("URL should be empty when electronic survey is No.")
+        for field, pattern in [
+            ("Name privacy", r"Will you assure that the participant will only see his/her name\?.*?(Yes ☑|No ☑|Yes ☐|No ☐)"),
+            ("Read receipt", r"Will you have the “read receipt” function turned off\?.*?(Yes ☑|No ☑|Yes ☐|No ☐)"),
+            ("Dropdown menu", r"Do they have the option to choose “No response”.*?(Yes ☑|No ☑|No dropdown menu ☑|Yes ☐|No ☐|No dropdown menu ☐)"),
+            ("Data transmission", r"How will data be transmitted\?.*?\n(.*?)(What is the URL\?|$)"),
+            ("URL", r"What is the URL\?.*?\n\s*([^\n]*)")
+        ]:
+            match = re.search(pattern, part_6_text, re.DOTALL)
+            if match and ((field in ["Name privacy", "Read receipt", "Dropdown menu"] and match.group(1) not in ["Yes ☐", "No ☐", "No dropdown menu ☐"]) or
+                         (field in ["Data transmission", "URL"] and match.group(1).strip())):
+                results["errors"].append(f"{field} should be unanswered or empty when electronic survey is No.")
     
     storage = re.search(r"Where will data be stored\?.*?\n\s*([^\n]*)", part_6_text)
     storage_text = ""
@@ -951,10 +864,7 @@ def validate_part_6(doc, required_forms):
         maintenance_text = maintenance.group(1).strip()
         results["info"].append(f"Data maintenance: {maintenance_text}.")
         if "identifiable" in maintenance_text.lower():
-            required_forms.append({
-                "form": "Appendix L: Confidentiality Agreement Form",
-                "reason": "Recommended for research involving individually identifiable data."
-            })
+            required_forms.append({"form": "Appendix L: Confidentiality Agreement Form", "reason": "Recommended for identifiable data."})
     
     sharing = re.search(r"Will data be shared\?.*?(Yes ☑|No ☑|Yes ☐|No ☐)", part_6_text)
     sharing_details = re.search(r"How\? With whom\? Will subjects be re-identifiable\? Why or why not\?.*?\n(.*?)(Describe the data security plan|$)", part_6_text, re.DOTALL)
@@ -969,15 +879,12 @@ def validate_part_6(doc, required_forms):
         else:
             results["info"].append(f"Data sharing: {sharing_answer}.")
             if not sharing_details or not sharing_details.group(1).strip():
-                results["errors"].append("Data sharing details (how, with whom, re-identifiable, why) are missing or empty.")
+                results["errors"].append("Data sharing details are missing or empty.")
             else:
                 sharing_text = sharing_details.group(1).strip()
                 results["info"].append(f"Data sharing details: {sharing_text}.")
                 if sharing_answer == "Yes ☑" and "identifiable" in sharing_text.lower():
-                    required_forms.append({
-                        "form": "Appendix L: Confidentiality Agreement Form",
-                        "reason": "Required for sharing identifiable data to ensure confidentiality."
-                    })
+                    required_forms.append({"form": "Appendix L: Confidentiality Agreement Form", "reason": "Required for sharing identifiable data."})
     
     security = re.search(r"Describe the data security plan.*?\n(.*?)(Part 7:|$)", part_6_text, re.DOTALL)
     if not security or not security.group(1).strip():
@@ -987,8 +894,8 @@ def validate_part_6(doc, required_forms):
     
     return results, required_forms, maintenance_text, sharing_text, storage_text
 
-def validate_part_7(doc, required_forms):
-    """Validates Part 7: Risk/Benefit Analysis and updates required forms."""
+def validate_part_7(doc: docx.Document, required_forms: List[Dict]) -> Tuple[Dict[str, List[str]], List[Dict]]:
+    """Validates Part 7: Risk/Benefit Analysis."""
     results = {"errors": [], "warnings": [], "info": []}
     part_7_text = ""
     in_part_7 = False
@@ -1033,29 +940,25 @@ def validate_part_7(doc, required_forms):
             results["info"].append(f"Risks description: {risks_text}.")
     
     if minimal_risk and minimal_risk.group(1) == "No ☑":
-        required_forms.append({
-            "form": "Appendix B: Written Informed Consent Form",
-            "reason": "Required for research with greater than minimal risk, detailing risk management procedures."
-        })
-        
+        required_forms.append({"form": "Appendix B: Written Informed Consent Form", "reason": "Required for greater than minimal risk."})
         risk_fields = [
-            ("Why risks are essential", r"Explain why these risks are essential to your study.*?\n(.*?)(What have you done to minimize risks|$)", part_7_text),
+            ("Why risks are essential", r"Explain why these risks are essential.*?\n(.*?)(What have you done to minimize risks|$)", part_7_text),
             ("Minimize risks", r"What have you done to minimize risks.*?\n(.*?)(What protections have you put in place|$)", part_7_text),
-            ("Protections for consequences", r"What protections have you put in place.*?\n(.*?)(What procedures have you established|$)", part_7_text),
+            ("Protections", r"What protections have you put in place.*?\n(.*?)(What procedures have you established|$)", part_7_text),
             ("Adverse events reporting", r"What procedures have you established for reporting adverse events.*?\n(.*?)(Will the participants directly|$)", part_7_text)
         ]
         
         for field_name, pattern, text in risk_fields:
             match = re.search(pattern, text, re.DOTALL)
             if not match or not match.group(1).strip():
-                results["errors"].append(f"{field_name} description is missing or empty when risks are greater than minimal.")
+                results["errors"].append(f"{field_name} description is missing or empty.")
             else:
                 results["info"].append(f"{field_name} description provided.")
     
     participant_benefits = re.search(r"Will the participants directly or indirectly benefit.*?\n.*?(Yes ☑|No ☑|Yes ☐|No ☐)", part_7_text, re.DOTALL)
     benefits_explanation = re.search(r"Please explain:.*?\n(.*?)(What are the anticipated benefits to society|$)", part_7_text, re.DOTALL)
     
-     if not participant_benefits:
+    if not participant_benefits:
         results["errors"].append("Participant benefits question not found or improperly formatted.")
     else:
         benefits_answer = participant_benefits.group(1)
@@ -1246,7 +1149,7 @@ def validate_part_10(doc: docx.Document, required_forms: List[Dict]) -> Tuple[Di
         results["errors"].append("Part 10: Project Funding section not found.")
         return results, required_forms
     
-     funding = re.search(r"Is this project being supported by any funding sources\?.*?(Yes ☑|No ☑|Yes ☐|No ☐)", part_10_text)
+    funding = re.search(r"Is this project being supported by any funding sources\?.*?(Yes ☑|No ☑|Yes ☐|No ☐)", part_10_text)
     if not funding:
         results["errors"].append("Funding question not found or improperly formatted.")
     else:
