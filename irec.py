@@ -1190,4 +1190,182 @@ def validate_part_10(doc: docx.Document, required_forms: List[Dict]) -> Tuple[Di
     
     return results, required_forms
 
-def validate_part_11_and_checklist(doc: docx.Document, required_forms: List[Dict], pi_surname: str, file_names: Optional[List[str]] = None) ->
+def validate_part_11_and_checklist(doc: docx.Document, required_forms: List[Dict], pi_surname: str, file_names: Optional[List[str]] = None) -> Tuple[Dict[str, List[str]], List[Dict]]:
+    """Validates Part 11: Protocol for naming of documents and Checklist."""
+    results = {"errors": [], "warnings": [], "info": []}
+    part_11_text = ""
+    in_part_11 = False
+    
+    for para in doc.paragraphs:
+        if "Part 11: Protocol for naming of documents" in para.text:
+            in_part_11 = True
+        if in_part_11:
+            part_11_text += para.text + "\n"
+    
+    if not part_11_text:
+        results["errors"].append("Part 11: Protocol for naming of documents section not found.")
+        return results, required_forms
+    
+    # Validate document naming protocol
+    if not pi_surname:
+        results["errors"].append("PI surname is missing; cannot validate file naming protocol.")
+    else:
+        if not file_names:
+            results["warnings"].append("No file names provided for naming protocol validation.")
+        else:
+            application_found = False
+            for file_name in file_names:
+                is_valid, message = validate_file_name(file_name, pi_surname)
+                if is_valid:
+                    results["info"].append(message)
+                    if "Application form naming is valid" in message:
+                        application_found = True
+                else:
+                    results["errors"].append(message)
+            
+            if not application_found:
+                results["errors"].append("Main application file (Surname_IREC Application_MMDDYYYY) not found in provided file names.")
+    
+    # Validate checklist
+    checklist_start = re.search(r"CHECKLIST\s*Please indicate which forms.*?\n", part_11_text, re.DOTALL)
+    if not checklist_start:
+        results["errors"].append("Checklist section not found in Part 11.")
+        return results, required_forms
+    
+    checklist_text = part_11_text[checklist_start.end():]
+    
+    # Extract all checklist items
+    checklist_items = re.findall(r"([^\n]+?)\s*(☑|☐)\s*(?:\n|$)", checklist_text, re.DOTALL)
+    if not checklist_items:
+        results["errors"].append("No checklist items found in Part 11.")
+        return results, required_forms
+    
+    # Create a set of checked forms
+    checked_forms = {item.strip(): status for item, status in checklist_items}
+    
+    # Validate required forms
+    for required_form in required_forms:
+        form_name = required_form["form"].strip()
+        if form_name not in checked_forms:
+            results["errors"].append(f"Required form '{form_name}' not listed in checklist.")
+        elif checked_forms[form_name] != "☑":
+            results["errors"].append(f"Required form '{form_name}' is listed but not checked (☐).")
+        else:
+            results["info"].append(f"Required form '{form_name}' is correctly checked (☑).")
+    
+    # Check for unnecessary forms
+    required_form_names = {form["form"].strip() for form in required_forms}
+    for form_name, status in checked_forms.items():
+        if form_name not in required_form_names and status == "☑":
+            results["warnings"].append(f"Form '{form_name}' is checked but not required.")
+    
+    return results, required_forms
+
+def validate_irec_application(doc: docx.Document, file_names: Optional[List[str]] = None) -> Dict[str, any]:
+    """
+    Validates the entire NU IREC application by calling validation functions for each part.
+    Returns a consolidated report with submission ID, timestamp, and validation results.
+    """
+    results = {
+        "submission_id": str(uuid.uuid4()),
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "parts": {},
+        "summary": {"errors": 0, "warnings": 0, "info": 0}
+    }
+    
+    required_forms = [
+        {"form": "Appendix A: IREC Application Form", "reason": "Required for all submissions."},
+        {"form": "CITI Training Certificates", "reason": "Required for all team members."}
+    ]
+    
+    # Validate Part 0
+    part_0_results, exemption_claimed = validate_part_0(doc)
+    results["parts"]["Part 0"] = part_0_results
+    
+    # Validate Part 1
+    part_1_results = validate_part_1(doc, exemption_claimed)
+    results["parts"]["Part 1"] = part_1_results
+    
+    # Validate Part 2 and extract PI surname
+    part_2_results, pi_surname = validate_part_2(doc)
+    results["parts"]["Part 2"] = part_2_results
+    
+    # Validate Part 3
+    part_3_results, required_forms, methodology_text = validate_part_3(doc)
+    results["parts"]["Part 3"] = part_3_results
+    
+    # Validate Part 4
+    part_4_results, required_forms = validate_part_4(doc, required_forms)
+    results["parts"]["Part 4"] = part_4_results
+    
+    # Validate Part 5
+    part_5_results, required_forms, involvement_text = validate_part_5(doc, required_forms)
+    results["parts"]["Part 5"] = part_5_results
+    
+    # Validate Part 6
+    part_6_results, required_forms, maintenance_text, sharing_text, storage_text = validate_part_6(doc, required_forms)
+    results["parts"]["Part 6"] = part_6_results
+    
+    # Validate Part 7
+    part_7_results, required_forms = validate_part_7(doc, required_forms)
+    results["parts"]["Part 7"] = part_7_results
+    
+    # Validate Part 8
+    part_8_results, required_forms = validate_part_8(doc, required_forms, methodology_text, involvement_text, maintenance_text, sharing_text, storage_text)
+    results["parts"]["Part 8"] = part_8_results
+    
+    # Validate Part 10
+    part_10_results, required_forms = validate_part_10(doc, required_forms)
+    results["parts"]["Part 10"] = part_10_results
+    
+    # Validate Part 11 and Checklist
+    part_11_results, required_forms = validate_part_11_and_checklist(doc, required_forms, pi_surname, file_names)
+    results["parts"]["Part 11"] = part_11_results
+    
+    # Summarize results
+    for part, part_results in results["parts"].items():
+        results["summary"]["errors"] += len(part_results["errors"])
+        results["summary"]["warnings"] += len(part_results["warnings"])
+        results["summary"]["info"] += len(part_results["info"])
+    
+    # Add list of required forms to results
+    results["required_forms"] = required_forms
+    
+    return results
+
+if __name__ == "__main__":
+    # Example usage
+    try:
+        doc = docx.Document("irec_application.docx")
+        file_names = [
+            "Smith_IREC Application_01012025.docx",
+            "Smith_InterviewQuestions-Eng_01012025.pdf",
+            "Smith_ConsentForm-Eng_01012025.docx",
+            "Smith_CITI_01012023.pdf"
+        ]
+        validation_results = validate_irec_application(doc, file_names)
+        
+        print(f"Submission ID: {validation_results['submission_id']}")
+        print(f"Timestamp: {validation_results['timestamp']}")
+        print("\nValidation Summary:")
+        print(f"Total Errors: {validation_results['summary']['errors']}")
+        print(f"Total Warnings: {validation_results['summary']['warnings']}")
+        print(f"Total Info Messages: {validation_results['summary']['info']}")
+        
+        for part, results in validation_results["parts"].items():
+            print(f"\n{part}:")
+            for category, messages in results.items():
+                if messages:
+                    print(f"  {category.capitalize()}:")
+                    for msg in messages:
+                        print(f"    - {msg}")
+        
+        print("\nRequired Forms:")
+        for form in validation_results["required_forms"]:
+            print(f"  - {form['form']}: {form['reason']}")
+        
+    except FileNotFoundError:
+        print("Error: 'irec_application.docx' not found.")
+    except Exception as e:
+        print(f"Error processing document: {str(e)}")
+        
