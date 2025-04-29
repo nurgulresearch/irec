@@ -1,4 +1,3 @@
-```python
 import docx
 import re
 from datetime import datetime, timedelta
@@ -1056,7 +1055,7 @@ def validate_part_7(doc, required_forms):
     participant_benefits = re.search(r"Will the participants directly or indirectly benefit.*?\n.*?(Yes ☑|No ☑|Yes ☐|No ☐)", part_7_text, re.DOTALL)
     benefits_explanation = re.search(r"Please explain:.*?\n(.*?)(What are the anticipated benefits to society|$)", part_7_text, re.DOTALL)
     
-    if not participant_benefits:
+     if not participant_benefits:
         results["errors"].append("Participant benefits question not found or improperly formatted.")
     else:
         benefits_answer = participant_benefits.group(1)
@@ -1065,5 +1064,227 @@ def validate_part_7(doc, required_forms):
         else:
             results["info"].append(f"Participant benefits: {benefits_answer}.")
             if not benefits_explanation or not benefits_explanation.group(1).strip():
-                results["errors"].append("Participant benefits
-                                         
+                results["errors"].append("Participant benefits explanation is missing or empty.")
+            else:
+                results["info"].append("Participant benefits explanation provided.")
+                if benefits_answer == "Yes ☑":
+                    required_forms.append({
+                        "form": "Appendix B: Written Informed Consent Form",
+                        "reason": "Required to detail participant benefits."
+                    })
+    
+    societal_benefits = re.search(r"What are the anticipated benefits to society.*?\n(.*?)(Will incentives be offered|$)", part_7_text, re.DOTALL)
+    if not societal_benefits or not societal_benefits.group(1).strip():
+        results["errors"].append("Societal benefits description is missing or empty.")
+    else:
+        results["info"].append("Societal benefits description provided.")
+    
+    incentives = re.search(r"Will incentives be offered.*?\n.*?(Yes ☑|No ☑|Yes ☐|No ☐)", part_7_text, re.DOTALL)
+    incentives_details = re.search(r"If “Yes”, please describe.*?\n(.*?)(Part 8:|$)", part_7_text, re.DOTALL)
+    
+    if not incentives:
+        results["errors"].append("Incentives question not found or improperly formatted.")
+    else:
+        incentives_answer = incentives.group(1)
+        if "☐" in incentives_answer:
+            results["warnings"].append("Incentives checkbox is not marked (☐).")
+        elif incentives_answer == "Yes ☑":
+            results["info"].append("Incentives: Yes.")
+            required_forms.append({
+                "form": "Appendix B: Written Informed Consent Form",
+                "reason": "Required for incentives, with details."
+            })
+            if not incentives_details or not incentives_details.group(1).strip():
+                results["errors"].append("Incentives description is missing or empty.")
+            else:
+                results["info"].append("Incentives description provided.")
+        else:
+            results["info"].append("Incentives: No.")
+            if incentives_details and incentives_details.group(1).strip():
+                results["warnings"].append("Incentives description provided when incentives is No.")
+    
+    return results, required_forms
+
+def validate_part_8(doc: docx.Document, required_forms: List[Dict], methodology_text: str, involvement_text: str, maintenance_text: str, sharing_text: str, storage_text: str) -> Tuple[Dict[str, List[str]], List[Dict]]:
+    """Validates Part 8: Confidentiality/Anonymity with consistency checks."""
+    results = {"errors": [], "warnings": [], "info": []}
+    part_8_text = ""
+    in_part_8 = False
+    
+    for para in doc.paragraphs:
+        if "Part 8: Confidentiality/Anonymity" in para.text:
+            in_part_8 = True
+        if in_part_8:
+            part_8_text += para.text + "\n"
+        if "Part 10: Project Funding" in para.text:
+            break
+    
+    if not part_8_text:
+        results["errors"].append("Part 8: Confidentiality/Anonymity section not found.")
+        return results, required_forms
+    
+    recordings = re.search(r"Will you be video recording.*?\n.*?(Yes ☑|No ☑|Yes ☐|No ☐)", part_8_text, re.DOTALL)
+    if not recordings:
+        results["errors"].append("Recordings question not found or improperly formatted.")
+    else:
+        recordings_answer = recordings.group(1)
+        if "☐" in recordings_answer:
+            results["warnings"].append("Recordings checkbox is not marked (☐).")
+        else:
+            results["info"].append(f"Video/Photograph/Audio Recordings: {recordings_answer}.")
+            if recordings_answer == "Yes ☑":
+                required_forms.append({
+                    "form": "Appendix B: Written Informed Consent Form",
+                    "reason": "Required for recordings."
+                })
+            
+            # Consistency check with Parts 3 and 5
+            recording_terms = ["video", "audio", "photograph", "recording", "interview via video"]
+            if any(term in methodology_text.lower() for term in recording_terms) or any(term in involvement_text.lower() for term in recording_terms):
+                if recordings_answer != "Yes ☑":
+                    results["errors"].append("Part 8.1 should be 'Yes' as Parts 3 or 5 mention video/audio/photograph.")
+            elif recordings_answer == "Yes ☑":
+                results["warnings"].append("Part 8.1 is 'Yes' but no video/audio/photograph mentioned in Parts 3 or 5.")
+    
+    consent_recordings = re.search(r"Will you be obtaining signed consent forms.*?\n.*?(Yes ☑|No ☑|Yes ☐|No ☐)", part_8_text, re.DOTALL)
+    if not consent_recordings:
+        results["errors"].append("Consent for recordings question not found or improperly formatted.")
+    else:
+        consent_answer = consent_recordings.group(1)
+        if "☐" in consent_answer:
+            results["warnings"].append("Consent for recordings checkbox is not marked (☐).")
+        else:
+            results["info"].append(f"Consent for recordings: {consent_answer}.")
+            if recordings_answer == "Yes ☑" and consent_answer != "Yes ☑":
+                results["errors"].append("Consent for recordings must be 'Yes' when recordings is 'Yes'.")
+            if recordings_answer == "No ☑" and consent_answer == "Yes ☑":
+                results["errors"].append("Consent for recordings should be 'No' or unanswered when recordings is 'No'.")
+    
+    identifiability = re.search(r"Will the data be identifiable.*?\n.*?(Yes ☑|No ☑|Yes ☐|No ☐)", part_8_text, re.DOTALL)
+    identifiability_explanation = re.search(r"If “Yes”, please explain.*?\n(.*?)(Describe procedures to create/preserve anonymity|$)", part_8_text, re.DOTALL)
+    
+    if not identifiability:
+        results["errors"].append("Identifiability question not found or improperly formatted.")
+    else:
+        identifiability_answer = identifiability.group(1)
+        if "☐" in identifiability_answer:
+            results["warnings"].append("Identifiability checkbox is not marked (☐).")
+        else:
+            results["info"].append(f"Identifiability: {identifiability_answer}.")
+            if identifiability_answer == "Yes ☑":
+                required_forms.append({
+                    "form": "Appendix L: Confidentiality Agreement Form",
+                    "reason": "Required for identifiable data."
+                })
+                if not identifiability_explanation or not identifiability_explanation.group(1).strip():
+                    results["errors"].append("Identifiability explanation is missing or empty when identifiability is Yes.")
+                else:
+                    results["info"].append("Identifiability explanation provided.")
+                
+                # Consistency check with Part 6
+                if any("identifiable" in text.lower() for text in [maintenance_text, sharing_text, storage_text]):
+                    results["info"].append("Identifiability in Part 8 is consistent with Part 6.")
+                else:
+                    results["warnings"].append("Part 8.3 is 'Yes' but Part 6 does not mention identifiable data.")
+            else:
+                if any("identifiable" in text.lower() for text in [maintenance_text, sharing_text, storage_text]):
+                    results["errors"].append("Part 8.3 should be 'Yes' as Part 6 mentions identifiable data.")
+    
+    anonymity_na = re.search(r"Describe procedures to create/preserve anonymity.*?\n.*?(N/A ☑|N/A ☐)", part_8_text, re.DOTALL)
+    anonymity_procedures = re.search(r"Describe procedures to create/preserve anonymity.*?\n(.*?)(Describe procedures to preserve confidentiality|$)", part_8_text, re.DOTALL)
+    
+    if identifiability_answer == "No ☑":
+        if anonymity_na and anonymity_na.group(1) == "N/A ☑":
+            results["errors"].append("Anonymity procedures cannot be N/A when identifiability is No.")
+        elif not anonymity_procedures or not anonymity_procedures.group(1).strip():
+            results["errors"].append("Anonymity procedures description is missing or empty when identifiability is No.")
+        else:
+            results["info"].append("Anonymity procedures description provided.")
+    else:
+        if anonymity_na and anonymity_na.group(1) != "N/A ☑":
+            results["errors"].append("Anonymity procedures should be N/A when identifiability is Yes.")
+        if anonymity_procedures and anonymity_procedures.group(1).strip():
+            results["errors"].append("Anonymity procedures should be empty when identifiability is Yes.")
+    
+    confidentiality_fields = [
+        ("During data collection", r"During data collection.*?\n(.*?)(While results are analyzed|$)", part_8_text),
+        ("While results are analyzed", r"While results are analyzed.*?\n(.*?)(In publication/reporting|$)", part_8_text),
+        ("In publication/reporting", r"In publication/reporting.*?\n(.*?)(In storage after research completion|$)", part_8_text),
+        ("In storage after research completion", r"In storage after research completion.*?\n(.*?)(Part 10:|$)", part_8_text)
+    ]
+    
+    if identifiability_answer == "Yes ☑":
+        for field_name, pattern, text in confidentiality_fields:
+            match = re.search(pattern, text, re.DOTALL)
+            if not match or not match.group(1).strip():
+                results["errors"].append(f"Confidentiality procedures for '{field_name}' are missing or empty.")
+            else:
+                results["info"].append(f"Confidentiality procedures for '{field_name}' provided.")
+    else:
+        for field_name, pattern, text in confidentiality_fields:
+            match = re.search(pattern, text, re.DOTALL)
+            if match and match.group(1).strip():
+                results["warnings"].append(f"Confidentiality procedures for '{field_name}' should be empty when identifiability is No.")
+    
+    return results, required_forms
+
+def validate_part_10(doc: docx.Document, required_forms: List[Dict]) -> Tuple[Dict[str, List[str]], List[Dict]]:
+    """Validates Part 10: Project Funding."""
+    results = {"errors": [], "warnings": [], "info": []}
+    part_10_text = ""
+    in_part_10 = False
+    
+    for para in doc.paragraphs:
+        if "Part 10: Project Funding" in para.text:
+            in_part_10 = True
+        if in_part_10:
+            part_10_text += para.text + "\n"
+        if "Part 11: Protocol for naming of documents" in para.text:
+            break
+    
+    if not part_10_text:
+        results["errors"].append("Part 10: Project Funding section not found.")
+        return results, required_forms
+    
+     funding = re.search(r"Is this project being supported by any funding sources\?.*?(Yes ☑|No ☑|Yes ☐|No ☐)", part_10_text)
+    if not funding:
+        results["errors"].append("Funding question not found or improperly formatted.")
+    else:
+        funding_answer = funding.group(1)
+        if "☐" in funding_answer:
+            results["warnings"].append("Funding checkbox is not marked (☐).")
+        else:
+            results["info"].append(f"Project funding: {funding_answer}.")
+            if funding_answer == "Yes ☑":
+                source = re.search(r"If yes, please specify the funding source\(s\):.*?\n(.*?)(Is the funding external|$)", part_10_text, re.DOTALL)
+                external = re.search(r"Is the funding external to Nazarbayev University\?.*?(Yes ☑|No ☑|Yes ☐|No ☐)", part_10_text)
+                
+                if not source or not source.group(1).strip():
+                    results["errors"].append("Funding source description is missing or empty.")
+                else:
+                    results["info"].append(f"Funding source: {source.group(1).strip()}.")
+                
+                if not external:
+                    results["errors"].append("External funding question not found or improperly formatted.")
+                else:
+                    external_answer = external.group(1)
+                    if "☐" in external_answer:
+                        results["warnings"].append("External funding checkbox is not marked (☐).")
+                    else:
+                        results["info"].append(f"External funding: {external_answer}.")
+                        if external_answer == "Yes ☑":
+                            required_forms.append({
+                                "form": "Appendix K: Funding Source Form",
+                                "reason": "Required for external funding."
+                            })
+            else:
+                source = re.search(r"If yes, please specify the funding source\(s\):.*?\n(.*?)(Is the funding external|$)", part_10_text, re.DOTALL)
+                external = re.search(r"Is the funding external to Nazarbayev University\?.*?(Yes ☑|No ☑|Yes ☐|No ☐)", part_10_text)
+                if source and source.group(1).strip():
+                    results["errors"].append("Funding source should be empty when funding is No.")
+                if external and external.group(1) not in ["Yes ☐", "No ☐"]:
+                    results["errors"].append("External funding question should be unanswered when funding is No.")
+    
+    return results, required_forms
+
+def validate_part_11_and_checklist(doc: docx.Document, required_forms: List[Dict], pi_surname: str, file_names: Optional[List[str]] = None) ->
